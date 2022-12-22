@@ -285,8 +285,8 @@ if __name__ == '__main__':
 
     trainset = speechset.utils.IDWrapper(
         WavPitchDataset(
-            speechset.utils.DumpReader('./datasets/dumped')),
-            './datasets/dumped-pitch')
+            speechset.utils.DumpReader('./datasets/dumped'),
+            './datasets/dumped-pitch'))
     testset = speechset.utils.IDWrapper(
         WavPitchDataset(
             speechset.utils.DumpReader('./datasets/libri_test_clean'),

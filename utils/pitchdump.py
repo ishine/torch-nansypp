@@ -57,7 +57,7 @@ class PitchReader(DataReader):
         out = self.preproc_(path)
         filename, _ = os.path.splitext(os.path.basename(path))
         # [T]
-        pitch = np.load(os.path.join(self.pitch_dir, filename))
+        pitch = np.load(os.path.join(self.pitch_dir, f'{filename}.npy'))
         if len(out) == 2:
             text, audio = out
             return text, (audio, pitch)

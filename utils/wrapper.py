@@ -94,9 +94,9 @@ class TrainingWrapper:
         rstart = (start * factor).astype(np.int)
         # [B, _]
         pitseg, _ = self.segment(
-            pitches, pitlens, rstart, seglen=int(self.seg * factor))
+            pitches, pitlens, rstart, seglen=int(self.seglen * factor))
         # [B], [B, seglen], [B, seglen x F]
-        return sid, seg, pitseg
+        return sid, seg, pitseg.astype(np.float32)
 
     def sample_like(self, signal: torch.Tensor) -> List[torch.Tensor]:
         """Sample augmentation parameters.
@@ -216,7 +216,7 @@ class TrainingWrapper:
         cqt, p_amp, ap_amp = self.model.analyze_pitch(seg)
         # [B, N]
         pitch = F.interpolate(
-            pitch[:, None], size=seg.shape[-1], mode='linear').squeeze(dim=1)
+            pitch[:, None], size=p_amp.shape[-1], mode='linear').squeeze(dim=1)
         # [B, lin_hiddens, S]
         ling = self.model.analyze_linguistic(aug)
         # [B, timb_global], [B, timb_timber, timb_tokens]
@@ -281,9 +281,9 @@ class TrainingWrapper:
 
         # metric purpose
         confusion = torch.matmul(timber_global, timber_global.T)
-        pos_mask = torch.tensor(
-            (sid[:, None] == sid).astype(np.float32) * (1 - np.eye(bsize)),
-            device=self.device)
+        pos_mask = (
+            sid[:, None] == sid).to(torch.float32) * (
+                1 - torch.eye(bsize, device=sid.device))
         # placeholder
         metric_timber_pos, metric_timber_neg = None, None
         # positive case
