@@ -108,30 +108,26 @@ class Nansypp(nn.Module):
             config.synth_layers,
             config.synth_cycles)
 
-    def analyze_pitch(self, inputs: torch.Tensor, index: Optional[int] = None) \
-            -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def analyze_pitch(self, inputs: torch.Tensor) \
+            -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Estimate the pitch and periodical, aperiodical amplitudes.
         Args:
             inputs: [torch.float32; [B, T]], input speech signal.
-            index: CQT start index, use `cqt_center` if index is None
         Returns:
             [torch.float32; [B, cqt_bins, N]], CQT features.
-            [torch.float2; [B, N]], frame-level pitch and amplitude sequence.
+            [torch.float2; [B, N]], frame-level amplitude sequence.
         """
         # [B, cqt_bins, N(=T / cqt_hop)]
         ## TODO: log-scale or not.
         cqt = self.cqt(inputs)
         # alias
         freq = self.config.pitch_freq
-        if index is None:
-            index = self.cqt_center
+        index = self.cqt_center
         # [B, N, f0_bins], [B, N], [B, N]
-        pitch_bins, p_amp, ap_amp = self.pitch.forward(cqt[:, index:index + freq])
-        # [B, N]
-        pitch = (pitch_bins * self.pitch_bins).sum(dim=-1)
+        _, p_amp, ap_amp = self.pitch.forward(cqt[:, index:index + freq])
         # [B, cqt_bins, N], [B, N]
-        return cqt, pitch, p_amp, ap_amp
-    
+        return cqt, p_amp, ap_amp
+
     def analyze_linguistic(self, inputs: torch.Tensor) -> torch.Tensor:
         """Analyze the linguistic informations from inputs.
         Args:
@@ -157,10 +153,11 @@ class Nansypp(nn.Module):
         # [B, timb_global], [B, timb_timber, timb_tokens]
         return self.timber.forward(mel)
 
-    def analyze(self, inputs: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def analyze(self, inputs: torch.Tensor, pitch: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Analyze the input signal.
         Args:
             inputs: [torch.float32; [B, T]], input speech signal.
+            pitch: [torch.float32; [B, P]], pitch segment.
         Returns;
             analyzed featuers,
                 cqt: [torch.float32; []], CQT features.
@@ -171,7 +168,10 @@ class Nansypp(nn.Module):
                 timber_bank: [torch.float32; [B, timb_timber, timb_tokens]], timber token bank.
         """
         # [], [B, N]
-        cqt, pitch, p_amp, ap_amp = self.analyze_pitch(inputs)
+        cqt, p_amp, ap_amp = self.analyze_pitch(inputs)
+        # [B, P]
+        pitch = F.interpolate(
+            pitch[:, None], size=p_amp.shape[-1], mode='linear').squeeze(dim=1)
         # [B, ling_hiddens, S]
         ling = self.analyze_linguistic(inputs)
         # [B, timb_global], [B, timb_timber, timb_tokens]
@@ -218,17 +218,21 @@ class Nansypp(nn.Module):
         # [B, T], [B, T]
         return self.synthesizer.forward(pitch, p_amp, ap_amp, frame, noise)
 
-    def forward(self, inputs: torch.Tensor, noise: Optional[torch.Tensor] = None) \
+    def forward(self,
+                inputs: torch.Tensor,
+                pitch: torch.Tensor,
+                noise: Optional[torch.Tensor] = None) \
             -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Reconstruct input audio.
         Args:
             inputs: [torch.float32; [B, T]], input signal.
+            pitch: [torch.float32; [B, N]], input pitch signal.
             noise: [torch.float32; [B, T]], predefined noise for excitation, if provided.
         Returns:
             [torch.float32; [B, T]], reconstructed.
             auxiliary outputs, reference `Nansypp.analyze`.
         """
-        features = self.analyze(inputs)
+        features = self.analyze(inputs, pitch)
         # [B, T]
         excitation, synth = self.synthesize(
             features['pitch'],

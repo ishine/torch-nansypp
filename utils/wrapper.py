@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -38,27 +38,65 @@ class TrainingWrapper:
         self.seglen = self.config.train.seglen
         self.content_weight = self.config.train.content_start
 
-    def random_segment(self, bunch: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+    def wrap(self, bunch: List[np.ndarray]) -> List[torch.Tensor]:
+        """Wrap the array in to the tensor.
+        Args:
+            bunch: list of arrays.
+        Returns:
+            list of tensors.
+        """
+        return [torch.tensor(arr, device=self.device) for arr in bunch]
+
+    def segment(self,
+                seq: np.ndarray,
+                len_: np.ndarray,
+                start: Optional[np.ndarray] = None,
+                seglen: Optional[int] = None) \
+            -> Tuple[np.ndarray, np.ndarray]:
+        """Segment the speech.
+        Args:
+            seq: [np.float32; [B, T]], speech signal.
+            len:: [np.long; [B]], length of the signal.
+            start: [np.long; [B]], start index.
+            seglen: length of the segment.
+        """
+        # set default values
+        seglen = seglen or self.seglen
+        if start is None:
+            # [B
+            start = np.random.randint(np.maximum(1, len_ - seglen))
+        # [B, seglen]
+        seg = np.array([
+            np.pad(q[s:s + seglen], [0, max(seglen - len(q), 0)])
+            for q, s in zip(seq, start)])
+        return seg, start
+
+    def random_segment(self, bunch: List[np.ndarray]) \
+            -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Segment the spectrogram and audio into fixed sized array.
         Args:
             bunch: input tensors.
                 sid: [np.long; [B]], speaker id.
                 speeches: [np.float32; [B, T]], speeches.
                 lengths: [np.long; [B]], speech lengths.
+                pitches: [np.float32; [B, T]], pitch sequences.
+                pitlens: [np.long; [B]], length of pitch sequences.
         Returns:
-            randomly segmented spectrogram and audios.
+            randomly segmented audios and pitch sequences.
         """
         # [B]
-        sid, speeches, lengths = bunch
-        def segment(seq: np.ndarray, len_: np.ndarray) -> np.ndarray:
-            # [B]
-            start = np.random.randint(np.maximum(1, len_ - self.seglen))
-            # [B, seglen]
-            return np.array(
-                [np.pad(q[s:s + self.seglen], [0, max(self.seglen - len(q), 0)])
-                 for q, s in zip(seq, start)])
-        # [B], [B, seglen]
-        return sid, segment(speeches, lengths)
+        sid, speeches, lengths, pitches, pitlens = bunch
+        # [B, seglen], [B]
+        seg, start = self.segment(speeches, lengths)
+        # compute the length factor
+        factor = (pitlens / lengths).mean().item()
+        # reranging
+        rstart = (start * factor).astype(np.int)
+        # [B, _]
+        pitseg, _ = self.segment(
+            pitches, pitlens, rstart, seglen=int(self.seg * factor))
+        # [B], [B, seglen], [B, seglen x F]
+        return sid, seg, pitseg
 
     def sample_like(self, signal: torch.Tensor) -> List[torch.Tensor]:
         """Sample augmentation parameters.
@@ -114,11 +152,12 @@ class TrainingWrapper:
         # [B, T]
         return saves[:bsize]
 
-    def loss_discriminator(self, seg: torch.Tensor) \
+    def loss_discriminator(self, seg: torch.Tensor, pitch: torch.Tensor) \
             -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Compute the discriminator loss.
         Args:
             seg: [torch.float32; [B, T]], segmented speeches.
+            pitch: [torch.float32; [B, P]], segmented pitch sequences.
         Returns:
             loss and disctionaries.
         """
@@ -126,7 +165,10 @@ class TrainingWrapper:
             # augmentation
             aug = self.augment(seg)
             # [B, N]
-            _, pitch, p_amp, ap_amp = self.model.analyze_pitch(seg)
+            _, p_amp, ap_amp = self.model.analyze_pitch(seg)
+            # [B, N]
+            pitch = F.interpolate(
+                pitch[:, None], size=p_amp.shape[-1], mode='linear').squeeze(dim=1)
             # [B, lin_hiddens, S]
             ling = self.model.analyze_linguistic(aug)
             # [B, timb_global], [B, timb_timber, timb_tokens]
@@ -156,12 +198,13 @@ class TrainingWrapper:
             'excit': excit.cpu().detach().numpy(),
             'synth': synth.cpu().detach().numpy()}
 
-    def loss_generator(self, sid: np.ndarray, seg: torch.Tensor) \
+    def loss_generator(self, sid: np.ndarray, seg: torch.Tensor, pitch: torch.Tensor) \
             -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Compute the generator loss.
         Args:
             sid: [np.long; [B]], speaker id.
             seg: [torch.float32; [B, T]], segmented speech.
+            pitch: [torch.float32; [B, P]], segmented pitch sequences.
         Returns:
             loss and disctionaries.
         """
@@ -170,7 +213,10 @@ class TrainingWrapper:
         # augmnentation
         aug = self.augment(seg)
         # [B, cqt_bins, N], [B, N]
-        cqt, pitch, p_amp, ap_amp = self.model.analyze_pitch(seg)
+        cqt, p_amp, ap_amp = self.model.analyze_pitch(seg)
+        # [B, N]
+        pitch = F.interpolate(
+            pitch[:, None], size=seg.shape[-1], mode='linear').squeeze(dim=1)
         # [B, lin_hiddens, S]
         ling = self.model.analyze_linguistic(aug)
         # [B, timb_global], [B, timb_timber, timb_tokens]
@@ -201,38 +247,37 @@ class TrainingWrapper:
         # aggregate
         rctor_loss = mel_loss + mss_loss
 
-        # pitch self-supervision
-        dist = torch.randint(
-            self.config.train.cqt_shift_min,
-            self.config.train.cqt_shift_max + 1,  # for inclusive range
-            (bsize,), device=self.device)
-        # real start index
-        start = dist + self.model.cqt_center
-        # sampled
-        biased = torch.stack([
-            cqt_[i:i + self.config.model.pitch_freq]
-            for cqt_, i in zip(cqt, start)])
-        # [B, N, f0_bins]
-        biased_bins, _, _ = self.model.pitch.forward(biased)
-        # [B, N]
-        biased_pitch = (biased_bins * self.model.pitch_bins).sum(dim=-1)
+        # # pitch self-supervision
+        # dist = torch.randint(
+        #     self.config.train.cqt_shift_min,
+        #     self.config.train.cqt_shift_max + 1,  # for inclusive range
+        #     (bsize,), device=self.device)
+        # # real start index
+        # start = dist + self.model.cqt_center
+        # # sampled
+        # biased = torch.stack([
+        #     cqt_[i:i + self.config.model.pitch_freq]
+        #     for cqt_, i in zip(cqt, start)])
+        # # [B, N, f0_bins]
+        # biased_bins, _, _ = self.model.pitch.forward(biased)
+        # # [B, N]
+        # biased_pitch = (biased_bins * self.model.pitch_bins).sum(dim=-1)
 
-        # pitch consistency
-        pitch_loss = F.huber_loss(
-            biased_pitch.log2() + 0.5 * dist[:, None],
-            pitch.log2(),
-            delta=self.config.train.delta)
-        
-        # metric purpose
-        # [B, N']
-        gt_pitch = AF.detect_pitch_frequency(seg, sample_rate=self.config.model.sr)
-        # [B, N]
-        gt_pitch = F.interpolate(gt_pitch[:, None], size=pitch.shape[-1], mode='linear').squeeze(dim=1)
-        # []
-        metric_pitch_acc = F.l1_loss(
-            pitch.clamp_min(1e-5).log2(),
-            gt_pitch.clamp_min(1e-5).log2()).item()
+        # # pitch consistency
+        # pitch_loss = F.huber_loss(
+        #     biased_pitch.log2() + 0.5 * dist[:, None],
+        #     pitch.log2(),
+        #     delta=self.config.train.delta)
 
+        # # metric purpose
+        # # [B, N']
+        # gt_pitch = AF.detect_pitch_frequency(seg, sample_rate=self.config.model.sr)
+        # # [B, N]
+        # gt_pitch = F.interpolate(gt_pitch[:, None], size=pitch.shape[-1], mode='linear').squeeze(dim=1)
+        # # []
+        # metric_pitch_acc = F.l1_loss(
+        #     pitch.clamp_min(1e-5).log2(),
+        #     gt_pitch.clamp_min(1e-5).log2()).item()
 
         # metric purpose
         confusion = torch.matmul(timber_global, timber_global.T)
@@ -306,17 +351,17 @@ class TrainingWrapper:
         # reweighting
         weight = (rctor_loss / fmap_loss).detach() * fmap_loss
 
-        loss = d_fake + weight * fmap_loss + rctor_loss + pitch_loss + self.content_weight * cont_loss
+        loss = d_fake + weight * fmap_loss + rctor_loss + self.content_weight * cont_loss
         losses = {
             'gen/loss': loss.item(),
             'gen/d-fake': d_fake.item(),
             'gen/fmap': fmap_loss.item(),
             'gen/rctor': rctor_loss.item(),
-            'gen/pitch': pitch_loss.item(),
+            # 'gen/pitch': pitch_loss.item(),
             'gen/cont': cont_loss.item(),
             'metric/cont-pos': metric_pos,
             'metric/cont-neg': metric_neg,
-            'metric/AFpitch-l1': metric_pitch_acc,
+            # 'metric/AFpitch-l1': metric_pitch_acc,
             'common/warmup': self.content_weight,
             'common/weight': weight.item()}
         # conditional ploting
@@ -331,7 +376,7 @@ class TrainingWrapper:
             'mel_f': mel_f.cpu().detach().numpy(),
             'mel_r': mel_r.cpu().detach().numpy(),
             'log-cqt': cqt.clamp_min(1e-5).log().cpu().detach().numpy(),
-            'AFpitch': gt_pitch.clamp_min(1e-5).log2().cpu().detach().numpy(),
+            'AFpitch': pitch.clamp_min(1e-5).log2().cpu().detach().numpy(),
             'pitch': pitch.clamp_min(1e-5).log2().cpu().detach().numpy()}
 
     def update_warmup(self):
