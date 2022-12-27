@@ -319,6 +319,9 @@ if __name__ == '__main__':
         print('[*] load checkpoint: ' + ckpt_path)
         # since epoch starts with 0
         args.load_epoch += 1
+        # update warmup
+        trainer.wrapper.content_weight = \
+            len(trainset) * args.load_epoch * config.train.content_start
 
     # git configuration
     repo = git.Repo()
