@@ -91,7 +91,7 @@ class SERes2Block(nn.Module):
             nn.Linear(bottleneck, channels),
             nn.Sigmoid())
 
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+    def forward(self, inputs: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """Transform the inputs.
         Args:
             inputs: [torch.float32; [B, C, T]], input tensors,
@@ -106,7 +106,11 @@ class SERes2Block(nn.Module):
         # [B, C, T]
         x = self.postblock(x)
         # [B, C], squeeze and excitation
-        scale = self.excitation(x.mean(dim=-1))
+        if mask is not None:
+            s = (x * mask).sum(dim=-1) / mask.sum(dim=-1)
+        else:
+            s = s.mean(-1)
+        scale = self.excitation(s)
         # [B, C, T]
         x = x * scale[..., None]
         # residual connection
@@ -127,12 +131,13 @@ class AttentiveStatisticsPooling(nn.Module):
         # ref: https://github.com/KrishnaDN/Attentive-Statistics-Pooling-for-Deep-Speaker-Embedding
         # ref: https://github.com/TaoRuijie/ECAPA-TDNN
         self.attention = nn.Sequential(
-            nn.Conv1d(channels, bottleneck, 1),
+            nn.Conv1d(channels * 3, bottleneck, 1),
+            nn.ReLU(),
+            nn.BatchNorm1d(bottleneck),
             nn.Tanh(),
-            nn.Conv1d(bottleneck, channels, 1),
-            nn.Softmax(dim=-1))
+            nn.Conv1d(bottleneck, channels, 1))
 
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """Pooling with weighted statistics.
         Args:
             inputs: [torch.float32; [B, C, T]], input tensors,
@@ -140,11 +145,21 @@ class AttentiveStatisticsPooling(nn.Module):
         Returns:
             [torch.float32; [B, C x 2]], weighted statistics.
         """
+        t = x.size()[-1]
         # [B, C, T]
-        weights = self.attention(inputs)
+        mean = ((x * mask).sum(dim=-1, keepdim=True) / mask.sum(-1, keepdim=True)).repeat(1,1,t)
+        # [B, C, 1]
+        var = ((x - mean) * mask).square().sum(dim=-1, keepdim=True) / mask.sum(-1, keepdim=True)
+        # [B, C, T]
+        std = (var + 1e-7).sqrt().repeat(1,1,t)
+        # [B, 3C, T]
+        global_x = torch.cat((x, mean, std), dim=1)
+        weights = self.attention(global_x).masked_fill(~mask.to(torch.bool), float('-inf'))
+        # [B, C, T]
+        attn = F.softmax(weights, dim=-1)
         # [B, C]
-        mean = torch.sum(weights * inputs, dim=-1)
-        var = torch.sum(weights * inputs ** 2, dim=-1) - mean ** 2
+        mean = torch.sum(attn * x, dim=-1)
+        var = torch.sum(attn * x ** 2, dim=-1) - mean ** 2
         # [B, C x 2], for numerical stability of square root
         return torch.cat([mean, (var + 1e-7).sqrt()], dim=-1)
 
@@ -202,14 +217,12 @@ class MultiheadAttention(nn.Module):
         # [B, H, S, T]
         score = torch.matmul(keys.transpose(2, 3), queries) * (self.channels ** -0.5)
         if mask is not None:
-            score.masked_fill_(~mask[:, None, :, 0:1].to(torch.bool), -np.inf)
+            score.masked_fill_(~mask[..., None].to(torch.bool), -np.inf)
         # [B, H, S, T]
         weights = torch.softmax(score, dim=2)
         # [B, out_channels, T]
         out = self.proj_out(
             torch.matmul(values, weights).view(bsize, -1, querylen))
-        if mask is not None:
-            out = out * mask[:, 0:1]
         return out
 
 
@@ -285,12 +298,10 @@ class TimberEncoder(nn.Module):
             hiddens, hiddens, latent, timber, latent, heads)
         # attentive pooling and additional projector
         # out_channels=192
-        self.pool = nn.Sequential(
-            AttentiveStatisticsPooling(hiddens, bottleneck),
-            nn.BatchNorm1d(hiddens * 2),
-            nn.Linear(hiddens * 2, out_channels),
-            nn.BatchNorm1d(out_channels))
-        
+        self.pool = AttentiveStatisticsPooling(hiddens, bottleneck)
+        self.postblocks =  nn.Sequential(nn.BatchNorm1d(hiddens * 2),
+                                         nn.Linear(hiddens * 2, out_channels),
+                                         nn.BatchNorm1d(out_channels))
         # time-varying timber encoder
         self.timber_key = nn.Parameter(torch.randn(1, timber, tokens))
         self.sampler = MultiheadAttention(
@@ -300,7 +311,7 @@ class TimberEncoder(nn.Module):
         assert 0 <= slerp <= 1, f'value slerp(={slerp:.2f}) should be in range [0, 1]'
         self.slerp = slerp
 
-    def forward(self, inputs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, inputs: torch.Tensor, audiolen: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Evaluate the x-vectors from the input sequence.
         Args:
             inputs: [torch.float32; [B, in_channels, T]], input sequences,
@@ -308,26 +319,38 @@ class TimberEncoder(nn.Module):
             [torch.float32; [B, out_channels]], global x-vectors,
             [torch.float32; [B, timber, tokens]], timber token bank.
         """
+        if audiolen is not None:
+            mellen  = torch.ceil(audiolen / 256) + 1
+        # B, T
+        bsize, _, timestep = inputs.shape
+        if audiolen is None:
+            mellen = torch.full(
+                (bsize,), timestep, dtype=torch.long, device=inputs.device)
+        # [B, 1, T]
+        mask = (
+            torch.arange(timestep, device=inputs.device)[None]
+            < mellen[:, None]).to(torch.float32)[:, None]
+        
         # [B, C, T]
         x = self.preblock(inputs)
         # N x [B, C, T]
         xs = []
         for block in self.blocks:
             # [B, C, T]
-            x = block(x)
+            x = block(x, mask)
             xs.append(x)
         # [B, H, T]
         mfa = self.conv1x1(torch.cat(xs, dim=1))
         # [B, O]
-        global_ = F.normalize(self.pool(mfa), p=2, dim=-1)
+        global_ = F.normalize(self.postblocks(self.pool(mfa, mask)), p=2, dim=-1)
         # B
         bsize, _ = global_.shape
         # [B, latent, tokens]
         query = self.timber_query.repeat(bsize, 1, 1)
         # [B, latent, tokens]
-        query = self.pre_mha.forward(mfa, mfa, query) + query
+        query = self.pre_mha.forward(mfa, mfa, query, mask) + query
         # [B, timber, tokens]
-        local = self.post_mha.forward(mfa, mfa, query)
+        local = self.post_mha.forward(mfa, mfa, query, mask)
         # [B, out_channels], [B, timber, tokens]
         return global_, local
 
@@ -335,6 +358,7 @@ class TimberEncoder(nn.Module):
                       contents: torch.Tensor,
                       global_: torch.Tensor,
                       tokens: torch.Tensor,
+                      audiolen: torch.Tensor,
                       eps: float = 1e-5) -> torch.Tensor:
         """Sample the timber tokens w.r.t. the contents.
         Args:
@@ -345,6 +369,18 @@ class TimberEncoder(nn.Module):
         Returns:
             [torch.float32; [B, out_channels, T]], time-varying timber embeddings.
         """
+        if audiolen is not None:
+            mellen  = torch.ceil(audiolen / 256) + 1
+        # B, T
+        bsize, _, timestep = contents.shape
+        if audiolen is None:
+            mellen = torch.full(
+                (bsize,), timestep, dtype=torch.long, device=contents.device)
+        # [B, 1, T]
+        mask = (
+            torch.arange(timestep, device=contents.device)[None]
+            < mellen[:, None]).to(torch.float32)[:, None]
+        
         # [B, timber, tokens]
         key = self.timber_key.repeat(contents.shape[0], 1, 1)
         # [B, timber, T]

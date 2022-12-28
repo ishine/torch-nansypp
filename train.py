@@ -95,15 +95,16 @@ class Trainer:
         for epoch in tqdm.trange(epoch, self.config.train.epoch):
             with tqdm.tqdm(total=len(self.loader), leave=False) as pbar:
                 for it, bunch in enumerate(self.loader):
-                    sid, seg = self.wrapper.random_segment(bunch)
+                    sid, audiolen, seg = self.wrapper.random_segment(bunch)
                     seg = torch.tensor(seg, device=self.wrapper.device)
-                    loss_g, losses_g, aux_g = self.wrapper.loss_generator(sid, seg)
+                    audiolen = torch.tensor(audiolen, device=self.wrapper.device)
+                    loss_g, losses_g, aux_g = self.wrapper.loss_generator(sid, seg, audiolen)
                     # update
                     self.optim_g.zero_grad()
                     loss_g.backward()
                     self.optim_g.step()
 
-                    loss_d, losses_d, _ = self.wrapper.loss_discriminator(seg)
+                    loss_d, losses_d, _ = self.wrapper.loss_discriminator(seg, audiolen)
                     # update
                     self.optim_d.zero_grad()
                     loss_d.backward()
@@ -169,10 +170,11 @@ class Trainer:
 
             with torch.no_grad():
                 for bunch in tqdm.tqdm(self.testloader, leave=False):
-                    sid, seg = self.wrapper.random_segment(bunch)
+                    sid, audiolen, seg = self.wrapper.random_segment(bunch)
                     seg = torch.tensor(seg, device=self.wrapper.device)
-                    _, losses_g, _ = self.wrapper.loss_generator(sid, seg)
-                    _, losses_d, _ = self.wrapper.loss_discriminator(seg)
+                    audiolen = torch.tensor(audiolen, device=self.wrapper.device)
+                    _, losses_g, _ = self.wrapper.loss_generator(sid, seg, audiolen)
+                    _, losses_d, _ = self.wrapper.loss_discriminator(seg, audiolen)
                     for key, val in {**losses_g, **losses_d}.items():
                         losses[key].append(val)
 
@@ -276,9 +278,9 @@ if __name__ == '__main__':
     #         speechset.datasets.VCTK('./datasets/VCTK-Corpus', sr)]))
 
     trainset = speechset.utils.IDWrapper(
-        speechset.WavDataset(speechset.utils.DumpReader('./datasets/dumped')))
+        speechset.WavDataset(speechset.utils.DumpReader('/datasets/lr_tts')))
     testset = speechset.utils.IDWrapper(
-        speechset.WavDataset(speechset.utils.DumpReader('./datasets/libri_test_clean')))
+        speechset.WavDataset(speechset.utils.DumpReader('/datasets/audios/dump/librispeech_test_clean/')))
 
     # model definition
     device = torch.device(

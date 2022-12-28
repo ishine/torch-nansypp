@@ -144,7 +144,7 @@ class Nansypp(nn.Module):
         # [B, ling_hiddens, S]
         return self.linguistic.forward(w2v2.transpose(1, 2))
 
-    def analyze_timber(self, inputs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def analyze_timber(self, inputs: torch.Tensor, audiolen: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Analyze the timber informations from inputs.
         Args:
             inputs: [torch.float32; [B, T]], input speech signal.
@@ -155,9 +155,9 @@ class Nansypp(nn.Module):
         # [B, mel, T / mel_hop]
         mel = self.melspec.forward(inputs)
         # [B, timb_global], [B, timb_timber, timb_tokens]
-        return self.timber.forward(mel)
+        return self.timber.forward(mel, audiolen)
 
-    def analyze(self, inputs: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def analyze(self, inputs: torch.Tensor, audiolen: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Analyze the input signal.
         Args:
             inputs: [torch.float32; [B, T]], input speech signal.
@@ -175,7 +175,7 @@ class Nansypp(nn.Module):
         # [B, ling_hiddens, S]
         ling = self.analyze_linguistic(inputs)
         # [B, timb_global], [B, timb_timber, timb_tokens]
-        timber_global, timber_bank = self.analyze_timber(inputs)
+        timber_global, timber_bank = self.analyze_timber(inputs, audiolen)
         return {
             'cqt': cqt,
             'pitch': pitch,
@@ -192,6 +192,7 @@ class Nansypp(nn.Module):
                    ling: torch.Tensor,
                    timber_global: torch.Tensor,
                    timber_bank: torch.Tensor,
+                   audiolen: torch.Tensor,
                    noise: Optional[torch.Tensor] = None) \
             -> Tuple[torch.Tensor, torch.Tensor]:
         """Synthesize the signal.
@@ -212,13 +213,13 @@ class Nansypp(nn.Module):
         contents = torch.cat([
             pitch_rel, ling, timber_global[..., None].repeat(1, 1, ling_len)], dim=1)
         # [B, timber_global, S]
-        timber_sampled = self.timber.sample_timber(contents, timber_global, timber_bank)
+        timber_sampled = self.timber.sample_timber(contents, timber_global, timber_bank, audiolen)
         # [B, ling_hiddens, S]
         frame = self.framelevel.forward(ling, timber_sampled)
         # [B, T], [B, T]
         return self.synthesizer.forward(pitch, p_amp, ap_amp, frame, noise)
 
-    def forward(self, inputs: torch.Tensor, noise: Optional[torch.Tensor] = None) \
+    def forward(self, inputs: torch.Tensor, audiolen: torch.Tensor, noise: Optional[torch.Tensor] = None) \
             -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Reconstruct input audio.
         Args:
@@ -228,7 +229,7 @@ class Nansypp(nn.Module):
             [torch.float32; [B, T]], reconstructed.
             auxiliary outputs, reference `Nansypp.analyze`.
         """
-        features = self.analyze(inputs)
+        features = self.analyze(inputs, audiolen)
         # [B, T]
         excitation, synth = self.synthesize(
             features['pitch'],
@@ -237,6 +238,7 @@ class Nansypp(nn.Module):
             features['ling'],
             features['timber_global'],
             features['timber_bank'],
+            audiolen=audiolen,
             noise=noise)
         # update
         features['excitation'] = excitation

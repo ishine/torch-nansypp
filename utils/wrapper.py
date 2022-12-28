@@ -57,8 +57,8 @@ class TrainingWrapper:
             return np.array(
                 [np.pad(q[s:s + self.seglen], [0, max(self.seglen - len(q), 0)])
                  for q, s in zip(seq, start)])
-        # [B], [B, seglen]
-        return sid, segment(speeches, lengths)
+        # [B], [B], [B, seglen]
+        return sid, np.minimum(lengths, self.seglen), segment(speeches, lengths)
 
     def sample_like(self, signal: torch.Tensor) -> List[torch.Tensor]:
         """Sample augmentation parameters.
@@ -84,7 +84,7 @@ class TrainingWrapper:
         power = torch.rand(bsize, peaks + 2, device=signal.device)
         # gains
         g_min, g_max = self.config.train.g_min, self.config.train.g_max
-        gain = torch.rand(bsize, peaks, device=signal.device) * (g_max - g_min) + g_min
+        gain = torch.rand(bsize, peaks + 2, device=signal.device) * (g_max - g_min) + g_min
         return fs, ps, power, gain
 
     @torch.no_grad()
@@ -114,7 +114,7 @@ class TrainingWrapper:
         # [B, T]
         return saves[:bsize]
 
-    def loss_discriminator(self, seg: torch.Tensor) \
+    def loss_discriminator(self, seg: torch.Tensor, audiolen: torch.Tensor) \
             -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Compute the discriminator loss.
         Args:
@@ -130,10 +130,10 @@ class TrainingWrapper:
             # [B, lin_hiddens, S]
             ling = self.model.analyze_linguistic(aug)
             # [B, timb_global], [B, timb_timber, timb_tokens]
-            timber_global, timber_bank = self.model.analyze_timber(seg)
+            timber_global, timber_bank = self.model.analyze_timber(seg, audiolen)
             # [B, T], [B, T]
             excit, synth = self.model.synthesize(
-                pitch, p_amp, ap_amp, ling, timber_global, timber_bank)
+                pitch, p_amp, ap_amp, ling, timber_global, timber_bank, audiolen)
             # truncating
             _, timesteps = seg.shape
             synth = synth[:, :timesteps]
@@ -156,7 +156,7 @@ class TrainingWrapper:
             'excit': excit.cpu().detach().numpy(),
             'synth': synth.cpu().detach().numpy()}
 
-    def loss_generator(self, sid: np.ndarray, seg: torch.Tensor) \
+    def loss_generator(self, sid: np.ndarray, seg: torch.Tensor, audiolen: torch.Tensor) \
             -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Compute the generator loss.
         Args:
@@ -174,10 +174,10 @@ class TrainingWrapper:
         # [B, lin_hiddens, S]
         ling = self.model.analyze_linguistic(aug)
         # [B, timb_global], [B, timb_timber, timb_tokens]
-        timber_global, timber_bank = self.model.analyze_timber(seg)
+        timber_global, timber_bank = self.model.analyze_timber(seg, audiolen)
         # [B, T], [B, T]
         excit, synth = self.model.synthesize(
-            pitch, p_amp, ap_amp, ling, timber_global, timber_bank)
+            pitch, p_amp, ap_amp, ling, timber_global, timber_bank, audiolen)
         # truncating
         synth = synth[:, :timesteps]
 
