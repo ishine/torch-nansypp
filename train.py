@@ -203,7 +203,7 @@ class Trainer:
 
                     # [1, T]
                     synth, _ = self.model.forward(
-                        torch.tensor(speech[None], device=self.wrapper.device))
+                        torch.tensor(speech[None], device=self.wrapper.device), torch.tensor(len_[None], device=self.wrapper.device))
 
                     synth = synth.squeeze(dim=0).cpu().numpy()
                     self.test_log.add_image(

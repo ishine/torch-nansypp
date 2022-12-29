@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchaudio
 
 from .config import Config
 
@@ -219,30 +220,54 @@ class Nansypp(nn.Module):
         # [B, T], [B, T]
         return self.synthesizer.forward(pitch, p_amp, ap_amp, frame, noise)
 
-    def forward(self, inputs: torch.Tensor, audiolen: torch.Tensor, noise: Optional[torch.Tensor] = None) \
-            -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        """Reconstruct input audio.
+    def forward(self,
+                context: torch.Tensor,
+                identity: torch.Tensor,
+                contextlen: Optional[torch.Tensor] = None,
+                identitylen: Optional[torch.Tensor] = None,
+                noise: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Convert the voice.
         Args:
-            inputs: [torch.float32; [B, T]], input signal.
-            noise: [torch.float32; [B, T]], predefined noise for excitation, if provided.
+            context: [torch.float32; [B, S]], audio signal, [-1, 1]-ranged.
+            identity: [torch.float32; [B, T]], audio signal, [-1, 1]-ranged.
+            contextlen, identitylen: [torch.long; [B]], length of the context and identity audio lengths.
+            noise: [torch.float32; [B, channels, S]], standard gaussian samples for z-prior reparametrization.
         Returns:
-            [torch.float32; [B, T]], reconstructed.
-            auxiliary outputs, reference `Nansypp.analyze`.
+            [torch.float32; [B, S]], converted audio signal, [-1, 1]-ranged.
         """
-        features = self.analyze(inputs, audiolen)
+        # [B, ling_hiddens, S], WARNING: it should be occurs the acoustic errors.
+        ling = self.analyze_linguistic(context)
+        # [B, Pi], pitch extraction with praat
+        _, pitch_c, _, _ = self.analyze_pitch(context)
+        pc_median = pitch_c.median(-1, keepdim=True)[0]
+        _, pitch, _, _ = self.analyze_pitch(identity)
+        pi_median = pitch.median(-1, keepdim=True)[0]
+        # [B, Pc]
+        assert (pi_median > 0).all() and (pc_median > 0).all(), \
+            'either identity or context speech is all unvoiced'
+        # computing MIDI steps
+        steps = 12 * (pi_median.log2() - pc_median.log2())
+        # moving median
+        context_p = torchaudio.functional.pitch_shift(context, self.config.sr, int(steps.item()))
+        pitch_c[pitch_c > 0.] = pitch_c[pitch_c > 0.] - pc_median + pi_median
+        # [], [B, N]
+        _, _, p_amp, ap_amp = self.analyze_pitch(context_p)
+        # [B, P]
+        pitch_c = F.interpolate(
+            pitch_c[:, None], size=p_amp.shape[-1], mode='linear').squeeze(dim=1)
+        # [B, timb_global], [B, timb_timber, timb_tokens]
+        timber_global, timber_bank = self.analyze_timber(identity, identitylen)
         # [B, T]
-        excitation, synth = self.synthesize(
-            features['pitch'],
-            features['p_amp'],
-            features['ap_amp'],
-            features['ling'],
-            features['timber_global'],
-            features['timber_bank'],
-            audiolen=audiolen,
+        _, synth = self.synthesize(
+            pitch_c,
+            p_amp,
+            ap_amp,
+            ling,
+            timber_global,
+            timber_bank,
+            audiolen=contextlen,
             noise=noise)
-        # update
-        features['excitation'] = excitation
-        return synth, features
+        return synth
 
     def save(self, path: str, optim: Optional[torch.optim.Optimizer] = None):
         """Save the models.
