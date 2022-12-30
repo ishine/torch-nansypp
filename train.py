@@ -202,8 +202,22 @@ class Trainer:
                         f'speech/test{i}', speech[None], step, sample_rate=self.config.data.sr)
 
                     # [1, T]
+                    context = torch.tensor(speech[None], device=self.wrapper.device)
+                    contextlen = torch.tensor([len_], device=self.wrapper.device)
+                    ling = self.analyze_linguistic(context)
+                    _, pitch, p_amp, ap_amp = self.analyze_pitch(context)
+                    timber_global, timber_bank = self.analyze_timber(context, contextlen)
+                    # [B, T]
+                    _, synth = self.synthesize(
+                        pitch,
+                        p_amp,
+                        ap_amp,
+                        ling,
+                        timber_global,
+                        timber_bank,
+                        audiolen=contextlen)
                     synth, _ = self.model.forward(
-                        torch.tensor(speech[None], device=self.wrapper.device), torch.tensor(len_[None], device=self.wrapper.device))
+                        torch.tensor(speech[None], device=self.wrapper.device), torch.tensor([len_], device=self.wrapper.device))
 
                     synth = synth.squeeze(dim=0).cpu().numpy()
                     self.test_log.add_image(

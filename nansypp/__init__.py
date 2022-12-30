@@ -238,7 +238,7 @@ class Nansypp(nn.Module):
         # [B, ling_hiddens, S], WARNING: it should be occurs the acoustic errors.
         ling = self.analyze_linguistic(context)
         # [B, Pi], pitch extraction with praat
-        _, pitch_c, _, _ = self.analyze_pitch(context)
+        _, pitch_c, p_amp, ap_amp = self.analyze_pitch(context)
         pc_median = pitch_c.median(-1, keepdim=True)[0]
         _, pitch, _, _ = self.analyze_pitch(identity)
         pi_median = pitch.median(-1, keepdim=True)[0]
@@ -250,7 +250,7 @@ class Nansypp(nn.Module):
         # moving median
         context_p = torchaudio.functional.pitch_shift(context, self.config.sr, int(steps.item()))
         pitch_c[pitch_c > 0.] = pitch_c[pitch_c > 0.] - pc_median + pi_median
-        # [], [B, N]
+        # # [], [B, N]
         _, _, p_amp, ap_amp = self.analyze_pitch(context_p)
         # [B, P]
         pitch_c = F.interpolate(
