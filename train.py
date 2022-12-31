@@ -205,8 +205,8 @@ class Trainer:
                     context = torch.tensor(speech[None], device=self.wrapper.device)
                     contextlen = torch.tensor([len_], device=self.wrapper.device)
                     ling = self.model.analyze_linguistic(context)
-                    _, pitch, p_amp, ap_amp = self.analyze_pitch(context)
-                    timber_global, timber_bank = self.analyze_timber(context, contextlen)
+                    _, pitch, p_amp, ap_amp = self.model.analyze_pitch(context)
+                    timber_global, timber_bank = self.model.analyze_timber(context, contextlen)
                     # [B, T]
                     _, synth = self.model.synthesize(
                         pitch,
