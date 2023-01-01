@@ -216,8 +216,6 @@ class Trainer:
                         timber_global,
                         timber_bank,
                         audiolen=contextlen)
-                    synth, _ = self.model.forward(
-                        torch.tensor(speech[None], device=self.wrapper.device), torch.tensor([len_], device=self.wrapper.device))
 
                     synth = synth.squeeze(dim=0).cpu().numpy()
                     self.test_log.add_image(
@@ -284,13 +282,6 @@ if __name__ == '__main__':
 
     sr = config.model.sr
     # prepare datasets
-    # trainset = speechset.WavDataset(
-    #     speechset.datasets.ConcatReader([
-    #         speechset.datasets.LibriTTS('./datasets/LibriTTS/train-clean-100', sr),
-    #         speechset.datasets.LibriTTS('./datasets/LibriTTS/train-clean-360', sr),
-    #         speechset.datasets.LibriSpeech('./datasets/LibriSpeech/train-other-500', sr),
-    #         speechset.datasets.VCTK('./datasets/VCTK-Corpus', sr)]))
-
     trainset = speechset.utils.IDWrapper(
         speechset.WavDataset(speechset.utils.DumpReader('/datasets/lr_tts')))
     testset = speechset.utils.IDWrapper(
