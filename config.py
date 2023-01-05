@@ -68,7 +68,7 @@ class TrainConfig:
         self.ckpt = './ckpt'
 
         # model name
-        self.name = 't1'
+        self.name = 'wav2vecmasking'
 
         # commit hash
         self.hash = 'unknown'
