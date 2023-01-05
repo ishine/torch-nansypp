@@ -51,6 +51,13 @@ class ConstantQTransform(nn.Module):
         return self.cqt(inputs[:, None])
 
 
+from typing import Optional
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torchaudio
+
 class MelSpectrogram(nn.Module):
     """log-Mel scale spectrogram.
     """
@@ -74,6 +81,7 @@ class MelSpectrogram(nn.Module):
         self.strides, self.windows = strides, windows
         # [mel, windows // 2 + 1]
         # use slaney-scale mel filterbank for `librosa.filters.mel` compatibility.
+        #             torch.tensor(librosa.filters.mel(sr, windows, n_mels=80, fmin=fmin, fmax=fmax).T))
         self.register_buffer(
             'melfilter',
             torchaudio.functional.melscale_fbanks(
@@ -92,12 +100,22 @@ class MelSpectrogram(nn.Module):
         Returns:
             [torch.float32; [B, mel, T / strides]], log-mel spectrogram
         """
+        audio = torch.nn.functional.pad(audio.unsqueeze(0), (int((self.windows-self.strides)/2), int((self.windows-self.strides)/2)), mode='reflect')
+        audio = audio.squeeze(0)
         # [B, windows // 2 + 1, T / strides, 2]
         fft = torch.stft(
             audio, self.windows, self.strides,
             window=self.hann,
-            center=True, pad_mode='reflect', return_complex=False)
+            center=False, pad_mode='reflect', normalized=False, onesided=True, return_complex=False)
         # [B, windows // 2 + 1, T / strides]
+        
         mag = torch.sqrt(fft.square().sum(dim=-1) + 1e-7)
         # [B, mel, T / strides]
-        return torch.log(torch.matmul(self.melfilter, mag) + 1e-7)
+        return self._normalize(self._amp_to_db(torch.matmul(self.melfilter, mag) + 1e-7))
+
+    def _amp_to_db(self, x, min_level_db=-100, ref_level_db=20):
+        min_level = torch.exp(-100 / 20 * torch.log(torch.tensor(10).to(x.device)))
+        return 20 * torch.log10(torch.maximum(min_level, x)) - ref_level_db
+    
+    def _normalize(self, S, min_level_db=-100):
+        return ((S - min_level_db) / (-min_level_db))
