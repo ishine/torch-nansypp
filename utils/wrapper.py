@@ -78,6 +78,7 @@ class TrainingWrapper:
         # sample shifts
         fs = sampler(self.config.train.formant_shift)
         ps = sampler(self.config.train.pitch_shift)
+        pr = sampler(self.config.train.pitch_range)
         # parametric equalizer
         peaks = self.config.train.num_peak
         # quality factor
@@ -85,13 +86,14 @@ class TrainingWrapper:
         # gains
         g_min, g_max = self.config.train.g_min, self.config.train.g_max
         gain = torch.rand(bsize, peaks + 2, device=signal.device) * (g_max - g_min) + g_min
-        return fs, ps, power, gain
+        return fs, ps, pr, power, gain
 
     @torch.no_grad()
     def augment(self, signal: torch.Tensor) -> torch.Tensor:
         """Augment the speech.
         Args:
             signal: [torch.float32; [B, T]], segmented speech.
+            ps: whether use pitch shift.
         Returns:
             [torch.float32; [B, T]], speech signal.
         """
@@ -100,9 +102,9 @@ class TrainingWrapper:
         saves = None
         while saves is None or len(saves) < bsize:
             # [B] x 4
-            fshift, pshift, power, gain = self.sample_like(signal)
+            fshift, pshift, prange, power, gain = self.sample_like(signal)
             # [B, T]
-            out = self.aug.forward(signal, pshift, fshift, power, gain)
+            out = self.aug.forward(signal, pshift, prange, fshift, power, gain)
             # for covering unexpected NaN
             nan = out.isnan().any(dim=-1)
             if not nan.all():

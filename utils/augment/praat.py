@@ -1,4 +1,5 @@
 import os
+import math
 import multiprocessing as mp
 from typing import Callable, Optional, Tuple, Union
 
@@ -39,21 +40,51 @@ class PraatAugment:
         """
         if not isinstance(snd, parselmouth.Sound):
             snd = parselmouth.Sound(snd, sampling_frequency=self.config.model.sr)
-        pitch = parselmouth.praat.call(
-            snd, 'To Pitch', self.pitch_steps, self.pitch_floor, self.pitch_ceil)
-        ndpit = pitch.selected_array['frequency']
-        # if all unvoiced
-        nonzero = ndpit > 1e-5
-        if nonzero.sum() == 0:
-            return snd.values[0]
-        # if voiced
-        median = np.median(ndpit[nonzero]).item()
-        out, = parselmouth.praat.call(
-            (snd, pitch), 'Change gender',
-            formant_shift,
-            median * pitch_shift,
-            pitch_range,
-            duration_factor).values
+        pitch = None
+        new_pitch_median = 0.0
+        if pitch_shift != 1.:
+            try:
+                try:
+                    pitch = parselmouth.praat.call(
+                        snd, 'To Pitch', self.pitch_steps, self.pitch_floor, self.pitch_ceil)
+                    pitch_median = parselmouth.praat.call(pitch, "Get quantile", 0.0, 0.0, 0.5, "Hertz")
+                except Exception as e:
+                    raise e
+                    pass
+                new_pitch_median = pitch_median * pitch_shift
+
+                # https://github.com/praat/praat/issues/1926#issuecomment-974909408
+                pitch_minimum = parselmouth.praat.call(pitch, "Get minimum", 0.0, 0.0, "Hertz", "Parabolic")
+                newMedian = pitch_median * pitch_shift
+                scaledMinimum = pitch_minimum * pitch_shift
+                resultingMinimum = newMedian + (scaledMinimum - newMedian) * pitch_range
+                if resultingMinimum < 0:
+                    new_pitch_median = 0.0
+                    pitch_range = 1.0
+
+                if math.isnan(new_pitch_median):
+                    new_pitch_median = 0.0
+                    pitch_range = 1.0
+
+            except Exception as e:
+                raise e
+        try:
+            if pitch is None:
+                out, = parselmouth.praat.call(
+                    snd, 'Change gender', self.pitch_floor, self.pitch_ceil,
+                    formant_shift,
+                    new_pitch_median,
+                    pitch_range,
+                    duration_factor).values
+            else:
+                out, = parselmouth.praat.call(
+                    (snd, pitch), 'Change gender',
+                    formant_shift,
+                    new_pitch_median,
+                    pitch_range,
+                    duration_factor).values
+        except Exception as e:
+            raise e
         return out
 
     def augment_wrap(self, wrap: Tuple[np.ndarray, float, float]) -> np.ndarray:

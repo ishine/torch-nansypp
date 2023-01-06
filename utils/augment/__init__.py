@@ -39,6 +39,7 @@ class Augment(nn.Module):
     def forward(self,
                 wavs: torch.Tensor,
                 pitch_shift: Optional[torch.Tensor] = None,
+                pitch_range: Optional[torch.Tensor] = None,
                 formant_shift: Optional[torch.Tensor] = None,
                 quality_power: Optional[torch.Tensor] = None,
                 gain: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -93,8 +94,8 @@ class Augment(nn.Module):
             self.config.data.hop,
             self.config.data.win,
             self.window).clamp(-1., 1.)
-        # max value normalization
-        out = out / out.abs().max(dim=-1, keepdim=True).values.clamp_min(1e-7)
+        # # max value normalization
+        # out = out / out.abs().max(dim=-1, keepdim=True).values.clamp_min(1e-7)
         if formant_shift is None and pitch_shift is None:
             return out
         # praat-based augmentation
@@ -102,9 +103,11 @@ class Augment(nn.Module):
             formant_shift = torch.ones(bsize)
         if pitch_shift is None:
             pitch_shift = torch.ones(bsize)
-        out = torch.tensor(np.stack([self.praat.augment(o, fs.item(), ps.item())
-            for o, fs, ps in zip(
+            pitch_range = torch.ones(bsize)
+        out = torch.tensor(np.stack([self.praat.augment(o, fs.item(), ps.item(), pr.item())
+            for o, fs, ps, pr in zip(
                 out.cpu().numpy(),
                 formant_shift.cpu().numpy(),
-                pitch_shift.cpu().numpy())], axis=0), device=out.device, dtype=torch.float32)
+                pitch_shift.cpu().numpy(),
+                pitch_range.cpu().numpy())], axis=0), device=out.device, dtype=torch.float32)
         return out
