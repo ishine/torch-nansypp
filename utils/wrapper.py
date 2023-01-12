@@ -128,9 +128,9 @@ class TrainingWrapper:
             # [B, N]
             _, pitch, p_amp, ap_amp = self.model.analyze_pitch(seg)
             # [B, lin_hiddens, S]
-            ling = self.model.analyze_linguistic(down_seg)
+            ling = self.model.analyze_linguistic(seg)
             # [B, timb_global], [B, timb_timber, timb_tokens]
-            timber_global, timber_bank = self.model.analyze_timber(down_seg, audiolen)
+            timber_global, timber_bank = self.model.analyze_timber(seg, audiolen)
             # [B, T], [B, T]
             excit, synth = self.model.synthesize(
                 pitch, p_amp, ap_amp, ling, timber_global, timber_bank, audiolen)
@@ -167,8 +167,6 @@ class TrainingWrapper:
         """
         # B, T
         bsize, timesteps = seg.shape
-        # [B, T]
-        down_seg = self.resample(seg)
         # [B, cqt_bins, N], [B, N]
         cqt, pitch, p_amp, ap_amp = self.model.analyze_pitch(seg)
         # [B, lin_hiddens, S]

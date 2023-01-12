@@ -32,7 +32,9 @@ class Wav2Vec2Wrapper(nn.Module):
         # warning can occurs since `Wav2Vec2Model` does not contain
         # quantization modules
         self.model = Wav2Vec2Model.from_pretrained(name)
+        
         self.sr = sr
+        self.resample = torchaudio.transforms.Resample(sr, 16000)
 
         self.linguistic = linguistic or Wav2Vec2Wrapper.LINGUISTIC
         self.eval()
@@ -50,6 +52,8 @@ class Wav2Vec2Wrapper(nn.Module):
             linguistic: [torch.float32; [B, S, C]], linguistic encodings,
                 where S = T // 320, T = floor(T' / `sr` x 16000)
         """
+        # [B, T]
+        audio = self.resample(audio)
         # B, T
         bsize, timestep = audio.shape
         if audiolen is None:

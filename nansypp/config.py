@@ -6,8 +6,8 @@ class Config:
 
         # unknown all STFT hyperparameters
         self.mel = 80
-        self.mel_hop = 320
-        self.mel_win = 1280
+        self.mel_hop = 256
+        self.mel_win = 1024
         self.mel_win_fn = 'hann'
         self.mel_fmin = 0
         self.mel_fmax = 8000
