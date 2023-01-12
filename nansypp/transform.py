@@ -108,14 +108,6 @@ class MelSpectrogram(nn.Module):
             window=self.hann,
             center=False, pad_mode='reflect', normalized=False, onesided=True, return_complex=False)
         # [B, windows // 2 + 1, T / strides]
-        
         mag = torch.sqrt(fft.square().sum(dim=-1) + 1e-7)
         # [B, mel, T / strides]
-        return self._normalize(self._amp_to_db(torch.matmul(self.melfilter, mag) + 1e-7))
-
-    def _amp_to_db(self, x, min_level_db=-100, ref_level_db=20):
-        min_level = torch.exp(-100 / 20 * torch.log(torch.tensor(10).to(x.device)))
-        return 20 * torch.log10(torch.maximum(min_level, x)) - ref_level_db
-    
-    def _normalize(self, S, min_level_db=-100):
-        return ((S - min_level_db) / (-min_level_db))
+        return torch.log(torch.matmul(self.melfilter, mag) + 1e-7)

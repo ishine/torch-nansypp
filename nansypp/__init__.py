@@ -209,8 +209,10 @@ class Nansypp(nn.Module):
         # S
         ling_len = ling.shape[-1]
         # [B, 3, S]
-        pitch_rel = F.interpolate(torch.stack([pitch, p_amp, ap_amp], dim=1), size=ling_len)
+        pitch_rel = torch.stack([pitch, p_amp, ap_amp], dim=1)
+        # pitch_rel = F.interpolate(torch.stack([pitch, p_amp, ap_amp], dim=1), size=ling_len)
         # [B, 3 + ling_hiddens + timb_global, S]
+        print(pitch.shape, ling.shape)
         contents = torch.cat([
             pitch_rel, ling, timber_global[..., None].repeat(1, 1, ling_len)], dim=1)
         # [B, timber_global, S]
@@ -218,7 +220,7 @@ class Nansypp(nn.Module):
         # [B, ling_hiddens, S]
         frame = self.framelevel.forward(ling, timber_sampled)
         # [B, T], [B, T]
-        return self.synthesizer.forward(pitch, p_amp, ap_amp, frame, noise)
+        return self.synthesizer.forward(pitch, p_amp, ap_amp, frame, audiolen, noise)
 
     def forward(self,
                 context: torch.Tensor,

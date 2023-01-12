@@ -320,7 +320,7 @@ class TimberEncoder(nn.Module):
             [torch.float32; [B, timber, tokens]], timber token bank.
         """
         if audiolen is not None:
-            mellen  = torch.ceil(audiolen / 256) + 1
+            mellen  = torch.ceil(audiolen / 22050 * 16000) // 320
         # B, T
         bsize, _, timestep = inputs.shape
         if audiolen is None:

@@ -125,14 +125,12 @@ class TrainingWrapper:
             loss and disctionaries.
         """
         with torch.no_grad():
-            # augmentation
-            aug = self.augment(seg)
             # [B, N]
             _, pitch, p_amp, ap_amp = self.model.analyze_pitch(seg)
             # [B, lin_hiddens, S]
-            ling = self.model.analyze_linguistic(aug)
+            ling = self.model.analyze_linguistic(down_seg)
             # [B, timb_global], [B, timb_timber, timb_tokens]
-            timber_global, timber_bank = self.model.analyze_timber(seg, audiolen)
+            timber_global, timber_bank = self.model.analyze_timber(down_seg, audiolen)
             # [B, T], [B, T]
             excit, synth = self.model.synthesize(
                 pitch, p_amp, ap_amp, ling, timber_global, timber_bank, audiolen)
@@ -169,12 +167,12 @@ class TrainingWrapper:
         """
         # B, T
         bsize, timesteps = seg.shape
-        # augmnentation
-        aug = self.augment(seg)
+        # [B, T]
+        down_seg = self.resample(seg)
         # [B, cqt_bins, N], [B, N]
         cqt, pitch, p_amp, ap_amp = self.model.analyze_pitch(seg)
         # [B, lin_hiddens, S]
-        ling = self.model.analyze_linguistic(aug)
+        ling = self.model.analyze_linguistic(seg)
         # [B, timb_global], [B, timb_timber, timb_tokens]
         timber_global, timber_bank = self.model.analyze_timber(seg, audiolen)
         # [B, T], [B, T]
@@ -251,8 +249,10 @@ class TrainingWrapper:
             metric_timber_neg = (confusion * (1 - pos_mask)).mean().item()
 
         # linguistic informations
+        aug1 = self.augment(seg)
         aug2 = self.augment(seg)
         # [B, lin_hiddens, S]
+        ling1 = self.model.analyze_linguistic(aug1)
         ling2 = self.model.analyze_linguistic(aug2)
         
         # alias
@@ -260,12 +260,12 @@ class TrainingWrapper:
         n_adj, n_cand = self.config.train.content_adj, self.config.train.candidates
         # [B, N, N]
         confusion = torch.matmul(
-            F.normalize(ling, p=2, dim=1).transpose(1, 2),
+            F.normalize(ling1, p=2, dim=1).transpose(1, 2),
             F.normalize(ling2, p=2, dim=1))
         # temperature
         confusion = confusion / kappa
         # N
-        num_tokens = ling.shape[-1]
+        num_tokens = ling1.shape[-1]
         # [N]
         arange = torch.arange(num_tokens)
         # [B, N], positive
