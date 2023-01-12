@@ -95,8 +95,9 @@ class Augment(nn.Module):
             self.config.data.win,
             self.window).clamp(-1., 1.)
         # # max value normalization
-        # out = out / out.abs().max(dim=-1, keepdim=True).values.clamp_min(1e-7)
+        # 
         if formant_shift is None and pitch_shift is None:
+            out = out / out.abs().max(dim=-1, keepdim=True).values.clamp_min(1e-7)
             return out
         # praat-based augmentation
         if formant_shift is None:
@@ -110,4 +111,5 @@ class Augment(nn.Module):
                 formant_shift.cpu().numpy(),
                 pitch_shift.cpu().numpy(),
                 pitch_range.cpu().numpy())], axis=0), device=out.device, dtype=torch.float32)
+        out = out / out.abs().max(dim=-1, keepdim=True).values.clamp_min(1e-7)
         return out
