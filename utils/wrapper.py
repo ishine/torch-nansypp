@@ -257,17 +257,30 @@ class TrainingWrapper:
         kappa = self.config.train.kappa
         n_adj, n_cand = self.config.train.content_adj, self.config.train.candidates
         # [B, N, N]
-        confusion = torch.matmul(
+        pos_conf = torch.matmul(
             F.normalize(ling1, p=2, dim=1).transpose(1, 2),
             F.normalize(ling2, p=2, dim=1))
         # temperature
-        confusion = confusion / kappa
+        pos_conf = pos_conf / kappa
         # N
         num_tokens = ling1.shape[-1]
         # [N]
         arange = torch.arange(num_tokens)
         # [B, N], positive
-        pos = confusion[:, arange, arange]
+        pos = pos_conf[:, arange, arange]
+        
+        # [B, N, N]
+        neg_conf1 = torch.matmul(
+            F.normalize(ling1, p=2, dim=1).transpose(1, 2),
+            F.normalize(ling1, p=2, dim=1))
+        # temperature
+        neg_conf1 = neg_conf1 / kappa
+        # [B, N, N]
+        neg_conf2 = torch.matmul(
+            F.normalize(ling2, p=2, dim=1).transpose(1, 2),
+            F.normalize(ling2, p=2, dim=1))
+        # temperature
+        neg_conf2 = neg_conf2 / kappa
         # [N]
         placeholder = torch.zeros(num_tokens, device=self.device)
         # [N, N]
@@ -279,16 +292,19 @@ class TrainingWrapper:
                     + i + n_adj // 2 + 1) % num_tokens,
                 1.)
             for i in range(num_tokens)])
+
         # [B, N, N(sum = candidates)], negative case
-        masked = confusion.masked_fill(~mask.to(torch.bool), -np.inf)
+        negmasked1 = neg_conf1.masked_fill(~mask.to(torch.bool), -np.inf)
+        negmasked2 = neg_conf2.masked_fill(~mask.to(torch.bool), -np.inf)
         # [B, N], negative case
-        neg = torch.logsumexp(masked, dim=-1)
+        neg1 = torch.logsumexp(negmasked1, dim=-1) / 2
+        neg2 = torch.logsumexp(negmasked2, dim=-1) / 2
         # [B]
-        cont_loss = -torch.logsumexp(pos - neg, dim=-1).mean()
+        cont_loss = -torch.logsumexp(2 * pos - neg1 - neg2, dim=-1).mean()
 
         # metric purpose
         metric_pos = pos.mean().item() * kappa
-        metric_neg = ((confusion * mask).sum(dim=-1) / n_cand).mean().item() * kappa
+        metric_neg = ((neg_conf1 * mask).sum(dim=-1) / n_cand).mean().item() * kappa
 
         # discriminative
         logits_f, fmaps_f = self.disc.forward(synth)
