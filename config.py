@@ -69,7 +69,7 @@ class TrainConfig:
         self.ckpt = './ckpt'
 
         # model name
-        self.name = 'melnorm_pitchaug'
+        self.name = 'melnorm_pitchaug_contrast'
 
         # commit hash
         self.hash = 'unknown'
