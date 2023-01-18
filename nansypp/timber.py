@@ -142,19 +142,23 @@ class AttentiveStatisticsPooling(nn.Module):
         Args:
             inputs: [torch.float32; [B, C, T]], input tensors,
                 where C = `channels`.
+            mask: [torch.float32; [B, 1, T]], sequential mask.
         Returns:
             [torch.float32; [B, C x 2]], weighted statistics.
         """
-        t = x.size()[-1]
+        # T
+        _, _, timesteps = x.shape
         # [B, C, T]
-        mean = ((x * mask).sum(dim=-1, keepdim=True) / mask.sum(-1, keepdim=True)).repeat(1,1,t)
-        # [B, C, 1]
-        var = ((x - mean) * mask).square().sum(dim=-1, keepdim=True) / mask.sum(-1, keepdim=True)
+        mean = ((x * mask).sum(dim=-1) / mask.sum(dim=-1))[..., None].repeat(1, 1, timesteps)
+        # [B, C]
+        var = ((x - mean) * mask).square().sum(dim=-1) / mask.sum(dim=-1)
         # [B, C, T]
-        std = (var + 1e-7).sqrt().repeat(1,1,t)
-        # [B, 3C, T]
+        std = (var + 1e-7).sqrt()[..., None].repeat(1, 1, timesteps)
+        # [B, 3 x C, T]
         global_x = torch.cat((x, mean, std), dim=1)
-        weights = self.attention(global_x).masked_fill(~mask.to(torch.bool), float('-inf'))
+        # [B, C, T]
+        weights = self.attention(global_x)
+        weights.masked_fill_(~mask.to(torch.bool), -np.inf)
         # [B, C, T]
         attn = F.softmax(weights, dim=-1)
         # [B, C]
@@ -217,12 +221,14 @@ class MultiheadAttention(nn.Module):
         # [B, H, S, T]
         score = torch.matmul(keys.transpose(2, 3), queries) * (self.channels ** -0.5)
         if mask is not None:
-            score.masked_fill_(~mask[..., None].to(torch.bool), -np.inf)
+            score.masked_fill_(~mask[:, None, :, :1].to(torch.bool), -np.inf)
         # [B, H, S, T]
         weights = torch.softmax(score, dim=2)
         # [B, out_channels, T]
         out = self.proj_out(
             torch.matmul(values, weights).view(bsize, -1, querylen))
+        if mask is not None:
+            out = out * mask[:, :1]
         return out
 
 
@@ -251,7 +257,8 @@ class TimberEncoder(nn.Module):
                  tokens: int,
                  heads: int,
                  contents: int,
-                 slerp: float):
+                 slerp: float,
+                 strides: int):
         """Initializer.
         Args:
             in_channels: size of the input channels.
@@ -310,6 +317,8 @@ class TimberEncoder(nn.Module):
         # unknown `slerp`
         assert 0 <= slerp <= 1, f'value slerp(={slerp:.2f}) should be in range [0, 1]'
         self.slerp = slerp
+        # alias
+        self.strides = strides
 
     def forward(self, inputs: torch.Tensor, audiolen: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Evaluate the x-vectors from the input sequence.
@@ -319,38 +328,33 @@ class TimberEncoder(nn.Module):
             [torch.float32; [B, out_channels]], global x-vectors,
             [torch.float32; [B, timber, tokens]], timber token bank.
         """
-        if audiolen is not None:
-            mellen  = torch.ceil(audiolen / 22050 * 16000) // 320
         # B, T
         bsize, _, timestep = inputs.shape
-        if audiolen is None:
-            mellen = torch.full(
-                (bsize,), timestep, dtype=torch.long, device=inputs.device)
+        mellen = torch.ceil(audiolen / self.strides).long()
         # [B, 1, T]
         mask = (
             torch.arange(timestep, device=inputs.device)[None]
-            < mellen[:, None]).to(torch.float32)[:, None]
-        
+            < mellen[:, None]).to(torch.float32)
         # [B, C, T]
         x = self.preblock(inputs)
         # N x [B, C, T]
         xs = []
         for block in self.blocks:
             # [B, C, T]
-            x = block(x, mask)
+            x = block(x, mask[:, None])
             xs.append(x)
         # [B, H, T]
         mfa = self.conv1x1(torch.cat(xs, dim=1))
         # [B, O]
-        global_ = F.normalize(self.postblocks(self.pool(mfa, mask)), p=2, dim=-1)
+        global_ = F.normalize(self.postblocks(self.pool(mfa, mask[:, None])), p=2, dim=-1)
         # B
         bsize, _ = global_.shape
         # [B, latent, tokens]
         query = self.timber_query.repeat(bsize, 1, 1)
         # [B, latent, tokens]
-        query = self.pre_mha.forward(mfa, mfa, query, mask) + query
+        query = self.pre_mha.forward(mfa, mfa, query, mask[..., None]) + query
         # [B, timber, tokens]
-        local = self.post_mha.forward(mfa, mfa, query, mask)
+        local = self.post_mha.forward(mfa, mfa, query, mask[..., None])
         # [B, out_channels], [B, timber, tokens]
         return global_, local
 
@@ -369,18 +373,14 @@ class TimberEncoder(nn.Module):
         Returns:
             [torch.float32; [B, out_channels, T]], time-varying timber embeddings.
         """
-        if audiolen is not None:
-            mellen  = torch.ceil(audiolen / 256) + 1
         # B, T
-        bsize, _, timestep = contents.shape
-        if audiolen is None:
-            mellen = torch.full(
-                (bsize,), timestep, dtype=torch.long, device=contents.device)
+        _, _, timestep = contents.shape
+        # [B]
+        mellen  = torch.ceil(audiolen / self.strides).long()
         # [B, 1, T]
         mask = (
             torch.arange(timestep, device=contents.device)[None]
             < mellen[:, None]).to(torch.float32)[:, None]
-        
         # [B, timber, tokens]
         key = self.timber_key.repeat(contents.shape[0], 1, 1)
         # [B, timber, T]
@@ -389,8 +389,8 @@ class TimberEncoder(nn.Module):
         sampled = F.normalize(self.proj(sampled), p=2, dim=1)
         # [B, 1, T]
         theta = torch.matmul(global_[:, None], sampled).clamp(-1 +  eps, 1 - eps).acos()
-        # [B, 1, T], slerp
+        # [B, out_channels, T], slerp
         # clamp the theta is not necessary since cos(theta) is already clampped
         return (
             torch.sin(self.slerp * theta) * sampled
-            + torch.sin((1 - self.slerp) * theta) * global_[..., None]) / theta.sin()
+            + torch.sin((1 - self.slerp) * theta) * global_[..., None]) / theta.sin() * mask
