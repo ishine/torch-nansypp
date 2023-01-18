@@ -179,7 +179,7 @@ class Trainer:
                     self.test_log.add_scalar(key, np.mean(val), step)
 
                 # wrap last bunch
-                _, speeches, lengths = bunch
+                speeches, lengths = self.testset.collate(bunch)
                 # B
                 bsize, = lengths.shape
                 for i in range(Trainer.LOG_AUDIO):
@@ -191,21 +191,21 @@ class Trainer:
                     # [T], gt plot
                     speech = speeches[idx, :len_]
                     self.test_log.add_image(
-                        f'mel-gt/test{i}', self.mel_img(self.melspec(speech).T), step)
+                        f'mel-gt/test{i}', self.mel_img(self.melspec(speech.cpu().numpy()).T), step)
                     self.test_log.add_audio(
                         f'speech/test{i}', speech[None], step, sample_rate=self.config.data.sr)
 
-                    features = self.model.analyze(
-                        speech[None],
-                        torch.tensor([len_], device=self.wrapper.device))
+                    len_ = torch.tensor([len_], device=self.wrapper.device)
+                    features = self.model.analyze(speech[None], len_)
                     # [1, T]
-                    _, synth = self.synthesize(
+                    _, synth = self.model.synthesize(
                         features['pitch'],
                         features['p_amp'],
                         features['ap_amp'],
                         features['ling'],
                         features['timber_global'],
-                        features['timber_bank'])
+                        features['timber_bank'],
+                        len_)
                     # [T]
                     synth = synth.squeeze(dim=0).cpu().numpy()
                     self.test_log.add_image(
@@ -301,7 +301,7 @@ if __name__ == '__main__':
         device=device)
     # weighted random wrapper
     # , guarantee the all speaker in single batch is all different
-    trainset = WeightedRandomWrapper(trainset, subepoch=5)
+    trainset = WeightedRandomWrapper(trainset, subepoch=2)
     print(f'[*] ids: {len(trainset.sids)}, subepoch: {trainset.subepoch}, total: {len(trainset)}')
 
     # model definition
