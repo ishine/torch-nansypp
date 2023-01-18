@@ -242,18 +242,18 @@ class TrainingWrapper:
         ling_a = torch.stack([
             self.model.analyze_linguistic(aug1),
             self.model.analyze_linguistic(aug2)], dim=0)
+        # normalize for cosine-similarity
+        ling_a = F.normalize(ling_a, dim=2)
         # alias
         kappa = self.config.train.kappa
         n_adj, n_cand = self.config.train.content_adj, self.config.train.candidates
         # [B, N], positive
-        pos = F.normalize(ling_a, dim=2).prod(dim=0).sum(dim=-2) / kappa
+        pos = ling_a.prod(dim=0).sum(dim=-2) / kappa
 
         # N
         num_tokens = ling_a.shape[-1]
         # [2, B, N, N]
-        confusion = torch.matmul(
-            F.normalize(ling_a, p=2, dim=1).transpose(-1, -2),
-            F.normalize(ling_a, p=2, dim=1)) / kappa
+        confusion = torch.matmul(ling_a.transpose(2, 3), ling_a) / kappa
         # [N]
         placeholder = torch.zeros(num_tokens, device=self.device)
         # [N, N]
