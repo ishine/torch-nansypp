@@ -23,7 +23,7 @@ class Wav2Vec2Wrapper(nn.Module):
         Args:
             name: name of the model, default use facebook XLSR-53.
             sr: sample rates of the input audio, default 16khz for XLSR-53.
-            speaker, linguistic: layer outputs for speaker, linguistic features. 
+            linguistic: layer outputs for linguistic features. 
         """
         super().__init__()
         name = name or Wav2Vec2Wrapper.DEFAULT
