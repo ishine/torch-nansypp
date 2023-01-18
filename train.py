@@ -14,6 +14,8 @@ from config import Config
 from disc import Discriminator
 from nansypp import Nansypp
 from speechset.utils.melstft import MelSTFT
+from utils.dataset import RealtimeWavDataset, WeightedRandomWrapper
+from utils.readers import Lionrocket, KLP, PPIN
 from utils.wrapper import TrainingWrapper
 
 
@@ -42,6 +44,8 @@ class Trainer:
         self.model = model
         self.disc = disc
         self.config = config
+        # for disabling auto-collation
+        def identity(x): return x
 
         self.dataset = dataset
         self.testset = testset
@@ -50,14 +54,14 @@ class Trainer:
             self.dataset,
             batch_size=config.train.batch,
             shuffle=config.train.shuffle,
-            collate_fn=self.dataset.collate,
+            collate_fn=identity,
             num_workers=config.train.num_workers,
             pin_memory=config.train.pin_memory)
 
         self.testloader = torch.utils.data.DataLoader(
             self.testset,
             batch_size=config.train.batch,
-            collate_fn=self.dataset.collate,
+            collate_fn=identity,
             num_workers=config.train.num_workers,
             pin_memory=config.train.pin_memory)
 
@@ -95,9 +99,7 @@ class Trainer:
         for epoch in tqdm.trange(epoch, self.config.train.epoch):
             with tqdm.tqdm(total=len(self.loader), leave=False) as pbar:
                 for it, bunch in enumerate(self.loader):
-                    audiolen, seg = self.wrapper.random_segment(bunch)
-                    seg = torch.tensor(seg, device=self.wrapper.device)
-                    audiolen = torch.tensor(audiolen, device=self.wrapper.device)
+                    audiolen, seg = self.wrapper.random_segment(self.dataset.collate(bunch))
                     loss_g, losses_g, aux_g = self.wrapper.loss_generator(seg, audiolen)
                     # update
                     self.optim_g.zero_grad()
@@ -166,9 +168,7 @@ class Trainer:
                 # inference
                 self.model.eval()
                 for bunch in tqdm.tqdm(self.testloader, leave=False):
-                    audiolen, seg = self.wrapper.random_segment(bunch)
-                    seg = torch.tensor(seg, device=self.wrapper.device)
-                    audiolen = torch.tensor(audiolen, device=self.wrapper.device)
+                    audiolen, seg = self.wrapper.random_segment(self.testset.collate(bunch))
                     _, losses_g, _ = self.wrapper.loss_generator(seg, audiolen)
                     _, losses_d, _ = self.wrapper.loss_discriminator(seg, audiolen)
                     for key, val in {**losses_g, **losses_d}.items():
@@ -271,15 +271,40 @@ if __name__ == '__main__':
         os.makedirs(ckpt_path)
 
     sr = config.model.sr
-    # prepare datasets
-    trainset = speechset.utils.IDWrapper(
-        speechset.WavDataset(speechset.utils.DumpReader('/datasets/lr_tts')))
-    testset = speechset.utils.IDWrapper(
-        speechset.WavDataset(speechset.utils.DumpReader('/datasets/audios/dump/librispeech_test_clean/')))
-
-    # model definition
     device = torch.device(
         'cuda:0' if torch.cuda.is_available() else 'cpu')
+
+    LIONROCKET = './datasets/lionrocket'
+    THRESHOLD = 10
+    lionrockets = [
+        Lionrocket(os.path.join(LIONROCKET, name), sr)
+        for name in os.listdir(LIONROCKET)
+        if os.path.exists(os.path.join(LIONROCKET, name, 'audio'))
+            and len(os.listdir(os.path.join(LIONROCKET, name, 'audio'))) > THRESHOLD]
+
+    klp = KLP.load('./datasets/klp.pickle')
+    klp.sr = sr
+    ppin = PPIN.load('./datasets/ppin.pickle')
+    ppin.sr = sr
+
+    trainset = RealtimeWavDataset(
+        speechset.datasets.ConcatReader([
+            speechset.datasets.VCTK('/data1/audio/vctk/VCTK-Corpus', sr),
+            speechset.datasets.LibriTTS('/data1/audio/libritts/LibriTTS/train-clean-100', sr),
+            speechset.datasets.LibriTTS('/data1/audio/libritts/LibriTTS/train-clean-360', sr),
+            speechset.datasets.LibriSpeech('/data1/audio/librispeech/LibriSpeech/train-other-500', sr),
+            klp, ppin] + lionrockets),
+        device=device,
+        verbose=True)
+    testset = RealtimeWavDataset(
+        speechset.datasets.LibriSpeech('/data1/audio/librispeech/LibriSpeech/test-clean', sr),
+        device=device)
+    # weighted random wrapper
+    # , guarantee the all speaker in single batch is all different
+    trainset = WeightedRandomWrapper(trainset, subepoch=5)
+    print(f'[*] ids: {len(trainset.sids)}, subepoch: {trainset.subepoch}, total: {len(trainset)}')
+
+    # model definition
     model = Nansypp(config.model)
     model.to(device)
 

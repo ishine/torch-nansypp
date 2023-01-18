@@ -37,27 +37,26 @@ class TrainingWrapper:
         self.seglen = self.config.train.seglen
         self.content_weight = self.config.train.content_start
 
-    def random_segment(self, bunch: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+    def random_segment(self, bunch: List[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Segment the spectrogram and audio into fixed sized array.
         Args:
             bunch: input tensors.
-                sid: [np.long; [B]], speaker id.
                 speeches: [np.float32; [B, T]], speeches.
                 lengths: [np.long; [B]], speech lengths.
         Returns:
             randomly segmented spectrogram and audios.
         """
+        # [B, T], [B]
+        speeches, lengths = bunch
+        # B
+        bsize, = lengths.shape
         # [B]
-        sid, speeches, lengths = bunch
-        def segment(seq: np.ndarray, len_: np.ndarray) -> np.ndarray:
-            # [B]
-            start = np.random.randint(np.maximum(1, len_ - self.seglen))
-            # [B, seglen]
-            return np.array(
-                [np.pad(q[s:s + self.seglen], [0, max(self.seglen - len(q), 0)])
-                 for q, s in zip(seq, start)])
-        # [B], [B, seglen]
-        return np.minimum(lengths, self.seglen), segment(speeches, lengths)
+        start = torch.rand(bsize, device=self.device) * (lengths - self.seglen).clamp_min(0)
+        # [B, seglen]
+        seg = torch.stack([
+            F.pad(q[s:s + self.seglen], [0, max(self.seglen - q.shape[-1], 0)])
+            for q, s in zip(speeches, start.long())], dim=0)
+        return lengths.clamp_max(self.seglen), seg
 
     def sample_like(self, signal: torch.Tensor) -> List[torch.Tensor]:
         """Sample augmentation parameters.
