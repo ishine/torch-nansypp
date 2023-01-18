@@ -153,7 +153,6 @@ class Trainer:
                         # pitch plot
                         fig = plt.figure()
                         ax = fig.add_subplot(1, 1, 1)
-                        ax.plot(aux_g['AFpitch'][Trainer.LOG_IDX], label='log-AFpitch')
                         ax.plot(aux_g['pitch'][Trainer.LOG_IDX], label='log-pitch')
                         ax.legend()
                         self.train_log.add_figure('pitch/train', fig, step)
@@ -201,22 +200,18 @@ class Trainer:
                     self.test_log.add_audio(
                         f'speech/test{i}', speech[None], step, sample_rate=self.config.data.sr)
 
+                    features = self.model.analyze(
+                        speech[None],
+                        torch.tensor([len_], device=self.wrapper.device))
                     # [1, T]
-                    context = torch.tensor(speech[None], device=self.wrapper.device)
-                    contextlen = torch.tensor([len_], device=self.wrapper.device)
-                    ling = self.model.analyze_linguistic(context)
-                    _, pitch, p_amp, ap_amp = self.model.analyze_pitch(context)
-                    timber_global, timber_bank = self.model.analyze_timber(context, contextlen)
-                    # [B, T]
-                    _, synth = self.model.synthesize(
-                        pitch,
-                        p_amp,
-                        ap_amp,
-                        ling,
-                        timber_global,
-                        timber_bank,
-                        audiolen=contextlen)
-
+                    _, synth = self.synthesize(
+                        features['pitch'],
+                        features['p_amp'],
+                        features['ap_amp'],
+                        features['ling'],
+                        features['timber_global'],
+                        features['timber_bank'])
+                    # [T]
                     synth = synth.squeeze(dim=0).cpu().numpy()
                     self.test_log.add_image(
                         f'mel-synth/test{i}', self.mel_img(self.melspec(synth).T), step)
