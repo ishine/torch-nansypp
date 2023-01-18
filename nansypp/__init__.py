@@ -4,7 +4,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchaudio
 
 from .config import Config
 
@@ -225,7 +224,8 @@ class Nansypp(nn.Module):
                 identity: torch.Tensor,
                 contextlen: Optional[torch.Tensor] = None,
                 identitylen: Optional[torch.Tensor] = None,
-                noise: Optional[torch.Tensor] = None) -> torch.Tensor:
+                noise: Optional[torch.Tensor] = None,
+                moving_median: bool = True) -> torch.Tensor:
         """Convert the voice.
         Args:
             context: [torch.float32; [B, S]], audio signal, [-1, 1]-ranged.
@@ -235,31 +235,30 @@ class Nansypp(nn.Module):
         Returns:
             [torch.float32; [B, S]], converted audio signal, [-1, 1]-ranged.
         """
+        def nonzero_median(pitch: torch.Tensor) -> torch.Tensor:
+            nonzero = pitch > 1e-5
+            # [B]
+            median = torch.stack([p[nz].median() for p, nz in zip(pitch, nonzero)])
+            # nan check
+            median[nonzero.sum(dim=-1) == 0] = 0.
+            return median
         # [B, ling_hiddens, S], WARNING: it should be occurs the acoustic errors.
         ling = self.analyze_linguistic(context)
-        # [B, Pi], pitch extraction with praat
-        _, pitch_c, p_amp, ap_amp = self.analyze_pitch(context)
-        pc_median = pitch_c.median(-1, keepdim=True)[0]
-        _, pitch, _, _ = self.analyze_pitch(identity)
-        pi_median = pitch.median(-1, keepdim=True)[0]
         # [B, Pc]
-        assert (pi_median > 0).all() and (pc_median > 0).all(), \
-            'either identity or context speech is all unvoiced'
-        # computing MIDI steps
-        steps = 12 * (pi_median.log2() - pc_median.log2())
-        # moving median
-        context_p = torchaudio.functional.pitch_shift(context, self.config.sr, int(steps.item()))
-        pitch_c[pitch_c > 0.] = pitch_c[pitch_c > 0.] - pc_median + pi_median
-        # # [], [B, N]
-        _, _, p_amp, ap_amp = self.analyze_pitch(context_p)
-        # [B, P]
-        pitch_c = F.interpolate(
-            pitch_c[:, None], size=p_amp.shape[-1], mode='linear').squeeze(dim=1)
+        _, pitch, p_amp, ap_amp = self.analyze_pitch(context)
+        if moving_median:
+            # [B, Pi]
+            _, pitch_i, _, _ = self.analyze_pitch(identity)
+            # [B]
+            pc_median = nonzero_median(pitch)
+            pi_median = nonzero_median(pitch_i)
+            # moving median
+            pitch[pitch > 0.] = pitch[pitch > 0.] - pc_median + pi_median
         # [B, timb_global], [B, timb_timber, timb_tokens]
         timber_global, timber_bank = self.analyze_timber(identity, identitylen)
         # [B, T]
         _, synth = self.synthesize(
-            pitch_c,
+            pitch,
             p_amp,
             ap_amp,
             ling,
