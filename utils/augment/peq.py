@@ -36,14 +36,14 @@ class ParametricEqualizer(nn.Module):
         Args:
             cutoff: cutoff frequency.
             gain: [torch.float32; [...]], boost of attenutation in decibel.
-            q: [torch.float32; [B]], quality factor.
+            q: [torch.float32; [...]], quality factor.
         Returns:
             [torch.float32; [..., windows // 2 + 1]], frequency filter.
         """
         # ref: torchaudio.functional.lowpass_biquad
         w0 = 2 * np.pi * cutoff / self.sr
         cos_w0 = np.cos(w0)
-        # [B]
+        # [...]
         alpha = np.sin(w0) / 2 / q
         cos_w0 = torch.full_like(alpha, np.cos(w0))
         A = (gain / 40. * np.log(10)).exp()
@@ -68,13 +68,13 @@ class ParametricEqualizer(nn.Module):
         Args:
             cutoff: cutoff frequency.
             gain: [torch.float32; [...]], boost of attenutation in decibel.
-            q: [torch.float32; [B]], quality factor.
+            q: [torch.float32; [...]], quality factor.
         Returns:
             [torch.float32; [..., windows // 2 + 1]], frequency filter.
         """
         # ref: torchaudio.functional.highpass_biquad
         w0 = 2 * np.pi * cutoff / self.sr
-        # [B]
+        # [...]
         alpha = np.sin(w0) / 2 / q
         cos_w0 = torch.full_like(alpha, np.cos(w0))
         A = (gain / 40. * np.log(10)).exp()
