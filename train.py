@@ -95,10 +95,10 @@ class Trainer:
         for epoch in tqdm.trange(epoch, self.config.train.epoch):
             with tqdm.tqdm(total=len(self.loader), leave=False) as pbar:
                 for it, bunch in enumerate(self.loader):
-                    sid, audiolen, seg = self.wrapper.random_segment(bunch)
+                    audiolen, seg = self.wrapper.random_segment(bunch)
                     seg = torch.tensor(seg, device=self.wrapper.device)
                     audiolen = torch.tensor(audiolen, device=self.wrapper.device)
-                    loss_g, losses_g, aux_g = self.wrapper.loss_generator(sid, seg, audiolen)
+                    loss_g, losses_g, aux_g = self.wrapper.loss_generator(seg, audiolen)
                     # update
                     self.optim_g.zero_grad()
                     loss_g.backward()
@@ -160,19 +160,16 @@ class Trainer:
             self.model.save(f'{self.ckpt_path}_{epoch}.ckpt', self.optim_g)
             self.disc.save(f'{self.ckpt_path}_{epoch}.ckpt-disc', self.optim_d)
 
-            # conditional keys
-            COND_KEYS = ['metric/timber-pos', 'metric/timber-neg']
             losses = {
                 key: [] for key in {**losses_d, **losses_g}}
-            for key in COND_KEYS:
-                losses[key] = []
-
             with torch.no_grad():
+                # inference
+                self.model.eval()
                 for bunch in tqdm.tqdm(self.testloader, leave=False):
-                    sid, audiolen, seg = self.wrapper.random_segment(bunch)
+                    audiolen, seg = self.wrapper.random_segment(bunch)
                     seg = torch.tensor(seg, device=self.wrapper.device)
                     audiolen = torch.tensor(audiolen, device=self.wrapper.device)
-                    _, losses_g, _ = self.wrapper.loss_generator(sid, seg, audiolen)
+                    _, losses_g, _ = self.wrapper.loss_generator(seg, audiolen)
                     _, losses_d, _ = self.wrapper.loss_discriminator(seg, audiolen)
                     for key, val in {**losses_g, **losses_d}.items():
                         losses[key].append(val)
@@ -185,8 +182,6 @@ class Trainer:
                 _, speeches, lengths = bunch
                 # B
                 bsize, = lengths.shape
-                # inference
-                self.model.eval()
                 for i in range(Trainer.LOG_AUDIO):
                     idx = (Trainer.LOG_IDX + i) % bsize
                     # min-length

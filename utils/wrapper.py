@@ -37,8 +37,7 @@ class TrainingWrapper:
         self.seglen = self.config.train.seglen
         self.content_weight = self.config.train.content_start
 
-    def random_segment(self, bunch: List[np.ndarray]) \
-            -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def random_segment(self, bunch: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
         """Segment the spectrogram and audio into fixed sized array.
         Args:
             bunch: input tensors.
@@ -57,8 +56,8 @@ class TrainingWrapper:
             return np.array(
                 [np.pad(q[s:s + self.seglen], [0, max(self.seglen - len(q), 0)])
                  for q, s in zip(seq, start)])
-        # [B], [B], [B, seglen]
-        return sid, np.minimum(lengths, self.seglen), segment(speeches, lengths)
+        # [B], [B, seglen]
+        return np.minimum(lengths, self.seglen), segment(speeches, lengths)
 
     def sample_like(self, signal: torch.Tensor) -> List[torch.Tensor]:
         """Sample augmentation parameters.
@@ -156,11 +155,10 @@ class TrainingWrapper:
             'excit': excit.cpu().detach().numpy(),
             'synth': synth.cpu().detach().numpy()}
 
-    def loss_generator(self, sid: np.ndarray, seg: torch.Tensor, audiolen: torch.Tensor) \
+    def loss_generator(self, seg: torch.Tensor, audiolen: torch.Tensor) \
             -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Compute the generator loss.
         Args:
-            sid: [np.long; [B]], speaker id.
             seg: [torch.float32; [B, T]], segmented speech.
         Returns:
             loss and disctionaries.
@@ -220,20 +218,6 @@ class TrainingWrapper:
             biased_pitch.log2() + 0.5 * dist[:, None],
             pitch.log2(),
             delta=self.config.train.delta)
-
-        # metric purpose
-        confusion = torch.matmul(timber_global, timber_global.T)
-        pos_mask = torch.tensor(
-            (sid[:, None] == sid).astype(np.float32) * (1 - np.eye(bsize)),
-            device=self.device)
-        # placeholder
-        metric_timber_pos, metric_timber_neg = None, None
-        # positive case
-        if pos_mask.sum() > 0:
-            metric_timber_pos = (confusion * pos_mask).mean().item()
-        # negative case
-        if (1 - pos_mask).sum() > 0:
-            metric_timber_neg = (confusion * (1 - pos_mask)).mean().item()
 
         # linguistic informations
         aug1 = self.augment(seg)
@@ -304,12 +288,6 @@ class TrainingWrapper:
             'metric/cont-neg': metric_neg,
             'common/warmup': self.content_weight,
             'common/weight': weight.item()}
-        # conditional ploting
-        if metric_timber_pos is not None:
-            losses['metric/timber-pos'] = metric_timber_pos
-        if metric_timber_neg is not None:
-            losses['metric/timber-neg'] = metric_timber_neg
-
         return loss, losses, {
             'excit': excit.cpu().detach().numpy(),
             'synth': synth.cpu().detach().numpy(),
