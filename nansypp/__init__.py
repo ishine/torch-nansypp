@@ -26,10 +26,9 @@ class Nansypp(nn.Module):
         """
         super().__init__()
         self.config = config
-        # assume the output channels of wav2vec2.forward is `config.w2v2_channels`
         self.wav2vec2 = Wav2Vec2Wrapper(config.w2v2_name, config.sr, config.w2v2_lin)
         self.linguistic = LinguisticEncoder(
-            config.w2v2_channels,
+            self.wav2vec2.channels,
             config.ling_hiddens,
             config.ling_preconv,
             config.ling_kernels,
@@ -87,7 +86,8 @@ class Nansypp(nn.Module):
             config.timb_heads,
             # [f0, Ap, Aap, L, g]
             config.ling_hiddens + config.timb_global + 3,
-            config.timb_slerp)
+            config.timb_slerp,
+            config.mel_hop)
 
         self.framelevel = FrameLevelSynthesizer(
             config.ling_hiddens,
