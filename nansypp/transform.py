@@ -1,5 +1,6 @@
 from typing import Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torchaudio
@@ -81,7 +82,6 @@ class MelSpectrogram(nn.Module):
         self.strides, self.windows = strides, windows
         # [mel, windows // 2 + 1]
         # use slaney-scale mel filterbank for `librosa.filters.mel` compatibility.
-        #             torch.tensor(librosa.filters.mel(sr, windows, n_mels=80, fmin=fmin, fmax=fmax).T))
         self.register_buffer(
             'melfilter',
             torchaudio.functional.melscale_fbanks(
@@ -100,21 +100,21 @@ class MelSpectrogram(nn.Module):
         Returns:
             [torch.float32; [B, mel, T / strides]], log-mel spectrogram
         """
-        audio = torch.nn.functional.pad(audio.unsqueeze(0), (int((self.windows-self.strides)/2), int((self.windows-self.strides)/2)), mode='reflect')
-        audio = audio.squeeze(0)
+        p = (self.windows - self.strides) // 2
+        audio = torch.nn.functional.pad(audio[None], (p, p), mode='reflect').squeeze(dim=0)
         # [B, windows // 2 + 1, T / strides, 2]
         fft = torch.stft(
             audio, self.windows, self.strides,
             window=self.hann,
-            center=False, pad_mode='reflect', normalized=False, onesided=True, return_complex=False)
+            center=False, return_complex=False)
         # [B, windows // 2 + 1, T / strides]
         mag = torch.sqrt(fft.square().sum(dim=-1) + 1e-7)
         # [B, mel, T / strides]
-        return self._normalize(self._amp_to_db(torch.matmul(self.melfilter, mag) + 1e-7))
+        return self.normalize(self.amp_to_db(torch.matmul(self.melfilter, mag) + 1e-7))
 
-    def _amp_to_db(self, x, min_level_db=-100, ref_level_db=20):
-        min_level = torch.exp(-100 / 20 * torch.log(torch.tensor(10).to(x.device)))
-        return 20 * torch.log10(torch.maximum(min_level, x)) - ref_level_db
+    def amp_to_db(self, x: torch.Tensor, min_level_db: int = -100, ref_level_db: int = 20):
+        min_level = np.exp(min_level_db / 20 * np.log(10))
+        return 20 * torch.log10(x.clamp_min(min_level)) - ref_level_db
     
-    def _normalize(self, S, min_level_db=-100):
-        return ((S - min_level_db) / (-min_level_db))
+    def normalize(self, x: torch.Tensor, min_level_db: int = -100):
+        return (x - min_level_db) / -min_level_db
